@@ -3,8 +3,8 @@
 This workflow runs on a standard GitHub-hosted Intel Mac. It downloads
 macOS Monterey 12.7.6 from Apple's software update catalog, verifies the
 original InstallAssistant package with macOS PackageKit before unpacking
-it, verifies the Apple-signed installer executables, and runs Apple's
-`createinstallmedia` against a GUID/HFS+ image.
+it, checks the disk payload, and runs Apple's `createinstallmedia` against
+a GUID/HFS+ image.
 
 The original Apple package is catalog product 062-40406, build 21H1320,
 with a catalog size of 12409187001 bytes. Package verification covers the
