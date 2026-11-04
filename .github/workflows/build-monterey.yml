@@ -11,7 +11,7 @@ jobs:
     runs-on: macos-15-intel
     timeout-minutes: 80
     steps:
-      - name: Download Apple installer and build USB image
+      - name: Download Apple installer
         shell: bash
         run: |
           set -euo pipefail
@@ -34,6 +34,35 @@ jobs:
           fi
 
           APP="/Applications/Install macOS Monterey.app"
+          for ATTEMPT in 1 2 3; do
+            if softwareupdate --fetch-full-installer --full-installer-version 12.7.6; then
+              break
+            fi
+            if [ "$ATTEMPT" -eq 3 ]; then
+              exit 1
+            fi
+            sleep 5
+          done
+          test -x "$APP/Contents/Resources/createinstallmedia"
+
+      - name: Verify Apple installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="/Applications/Install macOS Monterey.app"
+          RESULT="$RUNNER_TEMP/monterey-result"
+          mkdir -p "$RESULT"
+          codesign --verify --deep --verbose=2 -R='anchor apple' "$APP"
+          codesign --display --verbose=4 "$APP" \
+            2> "$RESULT/apple-installer-signature.txt"
+          hdiutil verify "$APP/Contents/SharedSupport/SharedSupport.dmg" \
+            | tee "$RESULT/apple-payload-verification.txt"
+
+      - name: Build bootable USB disk image
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="/Applications/Install macOS Monterey.app"
           RESULT="$RUNNER_TEMP/monterey-result"
           IMAGE="$RESULT/macOS_Monterey_12.7.6.dmg.img"
           ATTACH="$RUNNER_TEMP/monterey-attach.plist"
@@ -47,20 +76,6 @@ jobs:
             fi
           }
           trap cleanup EXIT
-
-          for ATTEMPT in 1 2 3; do
-            if softwareupdate --fetch-full-installer --full-installer-version 12.7.6; then
-              break
-            fi
-            if [ "$ATTEMPT" -eq 3 ]; then
-              exit 1
-            fi
-            sleep 5
-          done
-          test -x "$APP/Contents/Resources/createinstallmedia"
-          codesign --verify --deep --strict --verbose=2 "$APP"
-          codesign --display --verbose=4 "$APP" \
-            2> "$RESULT/apple-installer-signature.txt"
 
           hdiutil create -size 16g -layout GPTSPUD -fs JHFS+ \
             -volname MontereyInstaller -format UDRW \
