@@ -53,7 +53,7 @@ jobs:
           mkdir -p "$RESULT"
           pkgutil --check-signature "$PKG" | tee "$RESULT/apple-package-signature.txt"
           grep -F 'Apple Software Update Certification Authority' "$RESULT/apple-package-signature.txt"
-          grep -E 'Status: signed by a certificate trusted by (macOS|Mac OS X)' \
+          grep -E 'Status: (signed Apple Software|signed by a certificate trusted by (macOS|Mac OS X))' \
             "$RESULT/apple-package-signature.txt"
           sudo installer -pkg "$PKG" -target /
           EXECUTABLE="$(/usr/libexec/PlistBuddy \
@@ -106,7 +106,7 @@ jobs:
           diskutil info -plist "${DEVICE}s2" > "$INFO"
           VOLUME="$(/usr/libexec/PlistBuddy -c 'Print :MountPoint' "$INFO")"
           test -s "$VOLUME/Install macOS Monterey.app/Contents/SharedSupport/SharedSupport.dmg"
-          BOOT_EFI="$(find "$VOLUME" -type f -name boot.efi -print -quit)"
+          BOOT_EFI="$(sudo find "$VOLUME" -type f -name boot.efi -print -quit)"
           test -n "$BOOT_EFI"
 
           sync
