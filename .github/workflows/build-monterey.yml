@@ -11,7 +11,7 @@ jobs:
     runs-on: macos-15-intel
     timeout-minutes: 80
     steps:
-      - name: Download Apple installer
+      - name: Download original Apple installer package
         shell: bash
         run: |
           set -euo pipefail
@@ -33,30 +33,38 @@ jobs:
             exit 1
           fi
 
-          APP="/Applications/Install macOS Monterey.app"
-          for ATTEMPT in 1 2 3; do
-            if softwareupdate --fetch-full-installer --full-installer-version 12.7.6; then
-              break
-            fi
-            if [ "$ATTEMPT" -eq 3 ]; then
-              exit 1
-            fi
-            sleep 5
-          done
-          test -x "$APP/Contents/Resources/createinstallmedia"
+          PKG="$RUNNER_TEMP/InstallAssistant.pkg"
+          PKG_URL="https://swcdn.apple.com/content/downloads/24/16/062-40406-A_LQ4WW26M04/j7bl9ygay5prezturwh72ai10fvseh2uhw/InstallAssistant.pkg"
+          RESULT="$RUNNER_TEMP/monterey-result"
+          mkdir -p "$RESULT"
+          curl --fail --location --retry 5 --retry-all-errors \
+            --connect-timeout 30 --max-time 1800 --output "$PKG" "$PKG_URL"
+          test "$(stat -f '%z' "$PKG")" = 12409187001
+          printf 'Package URL: %s\nVersion: 12.7.6\nBuild: 21H1320\nCatalog product: 062-40406\n' \
+            "$PKG_URL" > "$RESULT/apple-source.txt"
 
-      - name: Verify Apple installer
+      - name: Verify original Apple package and installer executables
         shell: bash
         run: |
           set -euo pipefail
           APP="/Applications/Install macOS Monterey.app"
+          PKG="$RUNNER_TEMP/InstallAssistant.pkg"
           RESULT="$RUNNER_TEMP/monterey-result"
           mkdir -p "$RESULT"
-          codesign --verify --deep --verbose=2 -R='anchor apple' "$APP"
+          pkgutil --check-signature "$PKG" | tee "$RESULT/apple-package-signature.txt"
+          grep -F 'Apple Software Update Certification Authority' "$RESULT/apple-package-signature.txt"
+          grep -E 'Status: signed by a certificate trusted by (macOS|Mac OS X)' \
+            "$RESULT/apple-package-signature.txt"
+          sudo installer -pkg "$PKG" -target /
+          codesign --verify --verbose=2 -R='anchor apple' \
+            "$APP/Contents/MacOS/InstallAssistant"
+          codesign --verify --verbose=2 -R='anchor apple' \
+            "$APP/Contents/Resources/createinstallmedia"
           codesign --display --verbose=4 "$APP" \
             2> "$RESULT/apple-installer-signature.txt"
           hdiutil verify "$APP/Contents/SharedSupport/SharedSupport.dmg" \
             | tee "$RESULT/apple-payload-verification.txt"
+          rm "$PKG"
 
       - name: Build bootable USB disk image
         shell: bash
@@ -108,7 +116,7 @@ jobs:
           {
             date -u '+Built: %Y-%m-%dT%H:%M:%SZ'
             printf 'Installer: macOS Monterey 12.7.6\n'
-            printf 'Source: Apple softwareupdate\n'
+            printf 'Source: Apple software update catalog and signed InstallAssistant package\n'
             printf 'Architecture: %s\n' "$(uname -m)"
             printf 'Format: raw GUID/HFS+ disk image produced by createinstallmedia\n'
             printf 'Workflow commit: %s\n' "$GITHUB_SHA"
