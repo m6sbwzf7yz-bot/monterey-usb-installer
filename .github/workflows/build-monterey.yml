@@ -1,0 +1,125 @@
+name: Build Monterey USB installer
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15-intel
+    timeout-minutes: 80
+    steps:
+      - name: Download Apple installer and build USB image
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          sw_vers
+          df -h "$RUNNER_TEMP"
+
+          FREE_KB="$(df -Pk "$RUNNER_TEMP" | awk 'NR == 2 {print $4}')"
+          if [ "$FREE_KB" -lt 33554432 ]; then
+            for XCODE in /Applications/Xcode*.app; do
+              if [ -d "$XCODE" ]; then
+                sudo rm -rf "$XCODE"
+              fi
+            done
+            FREE_KB="$(df -Pk "$RUNNER_TEMP" | awk 'NR == 2 {print $4}')"
+          fi
+          if [ "$FREE_KB" -lt 33554432 ]; then
+            echo "::error::At least 32 GiB of free build space is required."
+            exit 1
+          fi
+
+          APP="/Applications/Install macOS Monterey.app"
+          RESULT="$RUNNER_TEMP/monterey-result"
+          IMAGE="$RESULT/macOS_Monterey_12.7.6.dmg.img"
+          ATTACH="$RUNNER_TEMP/monterey-attach.plist"
+          INFO="$RUNNER_TEMP/monterey-volume.plist"
+          MOUNT="$RUNNER_TEMP/monterey-mount"
+          DEVICE=""
+          mkdir -p "$RESULT" "$MOUNT"
+          cleanup() {
+            if [ -n "$DEVICE" ]; then
+              hdiutil detach "$DEVICE" -force || true
+            fi
+          }
+          trap cleanup EXIT
+
+          for ATTEMPT in 1 2 3; do
+            if softwareupdate --fetch-full-installer --full-installer-version 12.7.6; then
+              break
+            fi
+            if [ "$ATTEMPT" -eq 3 ]; then
+              exit 1
+            fi
+            sleep 5
+          done
+          test -x "$APP/Contents/Resources/createinstallmedia"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          codesign --display --verbose=4 "$APP" \
+            2> "$RESULT/apple-installer-signature.txt"
+
+          hdiutil create -size 16g -layout GPTSPUD -fs JHFS+ \
+            -volname MontereyInstaller -format UDRW \
+            "$RUNNER_TEMP/monterey-usb.dmg"
+          hdiutil attach -nobrowse -mountpoint "$MOUNT" -plist \
+            "$RUNNER_TEMP/monterey-usb.dmg" > "$ATTACH"
+          DEVICE="$(/usr/libexec/PlistBuddy \
+            -c 'Print :system-entities:0:dev-entry' "$ATTACH")"
+          if ! [[ "$DEVICE" =~ ^/dev/disk[0-9]+$ ]]; then
+            echo "::error::Unexpected image device."
+            exit 1
+          fi
+
+          sudo "$APP/Contents/Resources/createinstallmedia" \
+            --volume "$MOUNT" --nointeraction
+          diskutil verifyVolume "${DEVICE}s2"
+          diskutil list "$DEVICE" > "$RESULT/disk-layout.txt"
+          diskutil info -plist "${DEVICE}s2" > "$INFO"
+          VOLUME="$(/usr/libexec/PlistBuddy -c 'Print :MountPoint' "$INFO")"
+          test -s "$VOLUME/Install macOS Monterey.app/Contents/SharedSupport/SharedSupport.dmg"
+          BOOT_EFI="$(find "$VOLUME" -type f -name boot.efi -print -quit)"
+          test -n "$BOOT_EFI"
+
+          sync
+          hdiutil detach "$DEVICE"
+          DEVICE=""
+          mv "$RUNNER_TEMP/monterey-usb.dmg" "$IMAGE"
+          test "$(dd if="$IMAGE" bs=1 skip=512 count=8 2>/dev/null)" = "EFI PART"
+
+          {
+            date -u '+Built: %Y-%m-%dT%H:%M:%SZ'
+            printf 'Installer: macOS Monterey 12.7.6\n'
+            printf 'Source: Apple softwareupdate\n'
+            printf 'Architecture: %s\n' "$(uname -m)"
+            printf 'Format: raw GUID/HFS+ disk image produced by createinstallmedia\n'
+            printf 'Workflow commit: %s\n' "$GITHUB_SHA"
+            printf 'Run: %s/%s/actions/runs/%s\n' \
+              "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+            stat -f 'Image bytes: %z' "$IMAGE"
+          } > "$RESULT/build-info.txt"
+          cd "$RESULT"
+          shasum -a 256 macOS_Monterey_12.7.6.dmg.img \
+            > macOS_Monterey_12.7.6.dmg.img.sha256
+
+      - name: Upload raw USB image
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: macOS_Monterey_12.7.6.dmg.img
+          path: ${{ runner.temp }}/monterey-result/macOS_Monterey_12.7.6.dmg.img
+          archive: false
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Upload verification records
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: Monterey-verification
+          path: |
+            ${{ runner.temp }}/monterey-result/*.txt
+            ${{ runner.temp }}/monterey-result/*.sha256
+          retention-days: 1
+          if-no-files-found: error
