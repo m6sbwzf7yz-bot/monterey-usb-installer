@@ -11,7 +11,7 @@ jobs:
     runs-on: macos-15-intel
     timeout-minutes: 80
     steps:
-      - name: Download original Apple installer package
+      - name: Prepare GUID and HFS+ target image
         shell: bash
         run: |
           set -euo pipefail
@@ -33,6 +33,26 @@ jobs:
             exit 1
           fi
 
+          MOUNT="$RUNNER_TEMP/monterey-mount"
+          ATTACH="$RUNNER_TEMP/monterey-attach.plist"
+          mkdir -p "$MOUNT"
+          hdiutil create -size 16g -layout GPTSPUD -fs HFS+J \
+            -volname MontereyInstaller "$RUNNER_TEMP/monterey-usb.dmg"
+          test "$(dd if="$RUNNER_TEMP/monterey-usb.dmg" bs=1 skip=512 count=8 2>/dev/null)" = "EFI PART"
+          hdiutil attach -nobrowse -mountpoint "$MOUNT" -plist \
+            "$RUNNER_TEMP/monterey-usb.dmg" > "$ATTACH"
+          DEVICE="$(/usr/libexec/PlistBuddy \
+            -c 'Print :system-entities:0:dev-entry' "$ATTACH")"
+          if ! [[ "$DEVICE" =~ ^/dev/disk[0-9]+$ ]]; then
+            echo "::error::Unexpected image device."
+            exit 1
+          fi
+          diskutil list "$DEVICE"
+
+      - name: Download original Apple installer package
+        shell: bash
+        run: |
+          set -euo pipefail
           PKG="$RUNNER_TEMP/InstallAssistant.pkg"
           PKG_URL="https://swcdn.apple.com/content/downloads/24/16/062-40406-A_LQ4WW26M04/j7bl9ygay5prezturwh72ai10fvseh2uhw/InstallAssistant.pkg"
           RESULT="$RUNNER_TEMP/monterey-result"
@@ -81,11 +101,6 @@ jobs:
           }
           trap cleanup EXIT
 
-          hdiutil create -size 16g -layout GPTSPUD -fs JHFS+ \
-            -volname MontereyInstaller -format UDRW \
-            "$RUNNER_TEMP/monterey-usb.dmg"
-          hdiutil attach -nobrowse -mountpoint "$MOUNT" -plist \
-            "$RUNNER_TEMP/monterey-usb.dmg" > "$ATTACH"
           DEVICE="$(/usr/libexec/PlistBuddy \
             -c 'Print :system-entities:0:dev-entry' "$ATTACH")"
           if ! [[ "$DEVICE" =~ ^/dev/disk[0-9]+$ ]]; then
